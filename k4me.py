@@ -5,6 +5,7 @@ from pykeepass import PyKeePass
 from sys import argv
 from os import path, remove
 from joblib import Parallel, delayed
+from threading import Thread
 from tqdm import tqdm
 from datetime import datetime
 from time import time
@@ -19,6 +20,7 @@ STATUS_INTERRUPT = 2
 
 def attack_thread(dictionary: list, dbFile:str, thread_number:int):
     start_time = datetime.fromtimestamp(time())
+    print(f"Thread {thread_number} started.")
 
     for word in dictionary:
         if path.exists(SUCCESS_FILE):
@@ -45,8 +47,35 @@ def attack_thread(dictionary: list, dbFile:str, thread_number:int):
 
     return STATUS_FAILURE
 
-def initiate_attack(kdbFileName:str, wordlistFile:str, thread_count:int):
-    print(f"[i] Initializing...")
+def initiate_attack_asynchronous(kdbFileName:str, wordlistFile:str, thread_count:int):
+    num_lines = 0
+    thread_number = 1
+    fileStream = open(wordlistFile,'r', encoding="latin-1")
+
+    for _ in fileStream:
+        num_lines += 1 
+
+    max_size = int(num_lines / thread_count)
+    
+    print("[i] Processing wordlist...")
+
+    fileStream.seek(0,0)
+    sub_list = []
+    
+    for _ in tqdm(range(0, num_lines)):
+        word = fileStream.readline().strip()
+        if len(sub_list) == max_size:
+            next_thread = Thread(target=attack_thread, args=(sub_list, kdbFileName, thread_number))
+            thread_number += 1
+            sub_list = []
+            next_thread.start()
+        
+        sub_list.append(word)
+
+    fileStream.close()
+    print("All threads have been initialized. Now we wait.")
+
+def initiate_attack_synchronous(kdbFileName:str, wordlistFile:str, thread_count:int):
     sub_wordlists = []
 
     num_lines = 0
@@ -58,7 +87,7 @@ def initiate_attack(kdbFileName:str, wordlistFile:str, thread_count:int):
 
     max_size = int(num_lines / thread_count)
 
-    print("[i] Reading wordlist...")
+    print("[i] Processing wordlist...")
 
     fileStream.seek(0,0)
     sub_list = []
@@ -82,10 +111,12 @@ def initiate_attack(kdbFileName:str, wordlistFile:str, thread_count:int):
     
 def main():
     try:
+        sync = True
         argParser = ArgumentParser(prog=PROG_NAME, description=DESC, formatter_class=ArgumentDefaultsHelpFormatter,)
         argParser.add_argument("file", type=str, help="The .kdbx file to crack.")
         argParser.add_argument("wordlist", type=str, help="The wordlist to use in the attack.")
         argParser.add_argument("threads", type=int, help="The number of concurrent threads with which to run the attack.", default=2)
+        argParser.add_argument("synchronism", type=str, help="Indicates whether the threads start 'synchronously' or 'asynchronously' ('s' or 'a').", default="s")
 
         if len(argv) < 4:
             argParser.print_help()
@@ -101,10 +132,22 @@ def main():
             print(f"[-] Error: Wordlist file '{args.wordlist}' does not exist.")
             exit(STATUS_FAILURE)
 
+        elif not args.synchronism in ["s", "a"]:
+            print(f"[-] Invalid synchronism argument.")
+            exit(STATUS_BAD_PARAMS)
+        
+        if not args.synchronism == "s":
+            sync = False
+
         if path.exists(SUCCESS_FILE):
             remove(SUCCESS_FILE)
 
-        initiate_attack(args.file, args.wordlist, args.threads)
+        print(f"[i] Initializing...")
+
+        if sync:
+            initiate_attack_synchronous(args.file, args.wordlist, args.threads)
+        else:
+            initiate_attack_asynchronous(args.file, args.wordlist, args.threads)
     except KeyboardInterrupt:
         print("[*] Keyboard Interrupt detected. Quitting...")
         exit(STATUS_INTERRUPT)
